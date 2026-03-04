@@ -27,6 +27,24 @@ export interface FormatOptions {
 
 const DIGITS = '0123456789abcdefghijklmnopqrstuvwxyz'
 
+// Fast lookup table for digit values of ASCII characters in `DIGITS`.
+// Non-digit characters are mapped to -1.
+const DIGIT_TABLE: number[] = (() => {
+  const table = new Array<number>(128).fill(-1)
+
+  // '0'–'9'
+  for (let i = 0; i < 10; i++) {
+    table[48 + i] = i
+  }
+
+  // 'a'–'z'
+  for (let i = 0; i < 26; i++) {
+    table[97 + i] = 10 + i
+  }
+
+  return table
+})()
+
 /** Preset alphabets for use with `encodeCustom` / `decodeCustom`. */
 export const ALPHABETS = {
   /** 62 characters: digits + lowercase + uppercase. */
@@ -61,9 +79,11 @@ function inputToBigInt(value: NumberInput, base: number): bigint {
   const bigBase = BigInt(base)
   let result = 0n
 
-  for (const char of str) {
-    const digit = DIGITS.indexOf(char)
-    if (digit === -1 || digit >= base) {
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i)
+    const digit = code < DIGIT_TABLE.length ? DIGIT_TABLE[code] : -1
+    if (digit < 0 || digit >= base) {
+      const char = str[i]
       throw new Error(`Invalid character '${char}' for base ${base}`)
     }
     result = result * bigBase + BigInt(digit)
@@ -123,8 +143,15 @@ export function isValid(value: string, base: number): boolean {
   if (typeof value !== 'string') return false
   const trimmed = value.trim()
   if (trimmed === '') return false
-  const validChars = DIGITS.slice(0, base)
-  return [...trimmed.toLowerCase()].every((c) => validChars.includes(c))
+  const lower = trimmed.toLowerCase()
+
+  for (let i = 0; i < lower.length; i++) {
+    const code = lower.charCodeAt(i)
+    const digit = code < DIGIT_TABLE.length ? DIGIT_TABLE[code] : -1
+    if (digit < 0 || digit >= base) return false
+  }
+
+  return true
 }
 
 // ─── Shorthands ───────────────────────────────────────────────────────────────
@@ -214,6 +241,42 @@ export function stringifyBigInt(value: bigint, toBase: number): string {
 
 // ─── Custom alphabets ─────────────────────────────────────────────────────────
 
+type AlphabetMap = { [char: string]: number | undefined }
+
+type AlphabetInfo = {
+  base: bigint
+  charToValue: AlphabetMap
+}
+
+const alphabetCache = new Map<string, AlphabetInfo>()
+
+function getAlphabetInfo(alphabet: string): AlphabetInfo {
+  let info = alphabetCache.get(alphabet)
+  if (info) return info
+
+  if (alphabet.length < 2) {
+    throw new Error('Alphabet must contain at least 2 characters')
+  }
+
+  const charToValue: AlphabetMap = Object.create(null)
+
+  for (let i = 0; i < alphabet.length; i++) {
+    const ch = alphabet[i]
+    if (charToValue[ch] !== undefined) {
+      throw new Error('Alphabet must not contain duplicate characters')
+    }
+    charToValue[ch] = i
+  }
+
+  info = {
+    base: BigInt(alphabet.length),
+    charToValue,
+  }
+
+  alphabetCache.set(alphabet, info)
+  return info
+}
+
 /**
  * Encode a non-negative integer using a custom alphabet.
  * The index of each character in the alphabet defines its digit value.
@@ -228,10 +291,7 @@ export function stringifyBigInt(value: bigint, toBase: number): string {
  * encodeCustom(255n, '0123456789ABCDEF') // 'FF'
  */
 export function encodeCustom(value: NumberInput, alphabet: string): string {
-  if (alphabet.length < 2) throw new Error('Alphabet must contain at least 2 characters')
-  if (new Set(alphabet).size !== alphabet.length) {
-    throw new Error('Alphabet must not contain duplicate characters')
-  }
+  const { base } = getAlphabetInfo(alphabet)
 
   let n: bigint
   if (typeof value === 'bigint') n = value
@@ -241,7 +301,6 @@ export function encodeCustom(value: NumberInput, alphabet: string): string {
   if (n < 0n) throw new RangeError('Negative numbers are not supported')
   if (n === 0n) return alphabet[0]
 
-  const base = BigInt(alphabet.length)
   let result = ''
 
   while (n > 0n) {
@@ -259,15 +318,15 @@ export function encodeCustom(value: NumberInput, alphabet: string): string {
  * decodeCustom('LZ', ALPHABETS.BASE62)  // 1337n
  */
 export function decodeCustom(value: string, alphabet: string): bigint {
-  if (alphabet.length < 2) throw new Error('Alphabet must contain at least 2 characters')
   if (value.length === 0) throw new Error('Input string must not be empty')
 
-  const base = BigInt(alphabet.length)
+  const { base, charToValue } = getAlphabetInfo(alphabet)
   let result = 0n
 
-  for (const char of value) {
-    const digit = alphabet.indexOf(char)
-    if (digit === -1) throw new Error(`Character '${char}' not found in the alphabet`)
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i]
+    const digit = charToValue[char]
+    if (digit === undefined) throw new Error(`Character '${char}' not found in the alphabet`)
     result = result * base + BigInt(digit)
   }
 
